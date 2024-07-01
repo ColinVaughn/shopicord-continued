@@ -1,6 +1,9 @@
-import discord
 import datetime
 import logging
+
+import aiohttp
+import discord
+
 import settings
 import shopify_api as sapi  # Assuming this module supports async operations
 
@@ -10,7 +13,7 @@ handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w'
 handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
 logger.addHandler(handler)
 
-authors = []  # List of Discord User ID's of people that are allowed to use the bot
+authors = [257360542904090624]  # List of Discord User ID's of people that are allowed to use the bot
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -26,12 +29,35 @@ def is_us(author_id: int) -> bool:
 async def return_closed_orders() -> str:
     current_date = datetime.date.today()
     first_day_of_month = datetime.date(current_date.year, current_date.month, 1)
-    closed_order_count = await sapi.closed_count(first_day_of_month)
+    first_day_of_month_str = first_day_of_month.isoformat()  # Convert to string in YYYY-MM-DD format
+    closed_order_count = await sapi.closed_count(first_day_of_month_str)
     return f"**Shopify Closed:** {closed_order_count}"
 
 async def get_balance() -> str:
     balance = await sapi.balance()
     return f"**Shopify Balance:** €{balance}\n"
+
+logger = logging.getLogger('discord')
+
+
+async def random_quote() -> str:
+    api_url = "https://api.api-ninjas.com/v1/facts"
+    headers = {
+        'X-Api-Key': settings.NINJA_KEY
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.get(api_url, headers=headers) as response:
+            logger.debug(f"Request URL: {response.url}")
+            logger.debug(f"Request Headers: {response.request_info.headers}")
+            logger.debug(f"Response Status: {response.status}")
+            if response.status != 200:
+                logger.error(f"Bad Request Response Text: {await response.text()}")
+            response.raise_for_status()  # Raises an exception for 4xx/5xx responses
+            data = await response.json()
+            if data:
+                return data[0]['fact']
+            else:
+                return "No quote found"
 
 @client.event
 async def on_message(message: discord.Message):
@@ -61,14 +87,14 @@ async def on_message(message: discord.Message):
             if shopify_desc:
                 description += f"{shopify_desc}{shopify_desc_closed}\n{shopify_balance}"
             else:
-                quote = await sapi.random_quote()
+                quote = await random_quote()
                 description += f"{quote}\n\n{shopify_desc_closed}\n{shopify_balance}"
 
             orders = discord.Embed(
                 description=description,
                 colour=discord.Colour.blurple()
             )
-            await message.channel.send(mention, embed=orders)
+            await message.author.send(embed=orders)
 
     if message.content.startswith('!order') and message.content != '!orders':
         uuid = message.content.replace("!order ", "")
@@ -93,5 +119,6 @@ async def on_message(message: discord.Message):
                     description=str(order_dict),
                     colour=discord.Colour.blurple()
                 )
-            await message.channel.send(embed=order)
+            await message.author.send(embed=order)
+
 client.run(settings.DISCORD_WEBHOOK)
