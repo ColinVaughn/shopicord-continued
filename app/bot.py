@@ -1,9 +1,8 @@
 import datetime
 import logging
-
 import aiohttp
 import discord
-
+from discord.ext import commands
 import settings
 import shopify_api as sapi  # Assuming this module supports async operations
 
@@ -17,11 +16,11 @@ authors = [257360542904090624]  # List of Discord User ID's of people that are a
 
 intents = discord.Intents.default()
 intents.message_content = True
-client = discord.Client(intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents)
 
-@client.event
+@bot.event
 async def on_ready():
-    print(f'We have logged in as {client.user}')
+    print(f'We have logged in as {bot.user}')
 
 def is_us(author_id: int) -> bool:
     return author_id in authors
@@ -36,9 +35,6 @@ async def return_closed_orders() -> str:
 async def get_balance() -> str:
     balance = await sapi.balance()
     return f"**Shopify Balance:** €{balance}\n"
-
-logger = logging.getLogger('discord')
-
 
 async def random_quote() -> str:
     api_url = "https://api.api-ninjas.com/v1/facts"
@@ -55,70 +51,65 @@ async def random_quote() -> str:
             response.raise_for_status()  # Raises an exception for 4xx/5xx responses
             data = await response.json()
             if data:
-                return data[0]['fact']
+                return data[0]['fact']  # Assuming the fact is in 'fact' key
             else:
                 return "No quote found"
 
-@client.event
-async def on_message(message: discord.Message):
-    if message.author == client.user:
-        return
+@bot.command(name='orders')
+async def orders(ctx):
+    if is_us(ctx.author.id):
+        shopify_orders = await sapi.get_open_orders()
+        shopify = f"**Orders: **{shopify_orders}"
 
-    if message.content.startswith('!orders'):
-        if is_us(message.author.id):
-            mention = f"<@{message.author.id}>"
-            shopify_orders = await sapi.get_open_orders()
-            shopify = f"**Orders: **{shopify_orders}"
+        shopify_desc = ""
+        if int(shopify_orders) > 0:
+            shopify_dict = await sapi.order_list()
+            if shopify_dict:
+                shopify_message = ""
+                for key, value in shopify_dict.items():
+                    if isinstance(value, dict):
+                        shopify_message += f"**#{key}** - {value['day']}/{value['month']}/{value['year']} - Time: **{value['time']}** - **{value['country']}**\n"
+                shopify_desc = f"**Shopify:**\n{shopify_message}\n"
 
-            shopify_desc = ""
-            if int(shopify_orders) > 0:
-                shopify_dict = await sapi.order_list()
-                if shopify_dict:
-                    shopify_message = ""
-                    for key, value in shopify_dict.items():
-                        if isinstance(value, dict):
-                            shopify_message += f"**#{key}** - {value['day']}/{value['month']}/{value['year']} - Time: **{value['time']}** - **{value['country']}**\n"
-                    shopify_desc = f"**Shopify:**\n{shopify_message}\n"
+        shopify_desc_closed = await return_closed_orders()
+        shopify_balance = await get_balance()
 
-            shopify_desc_closed = await return_closed_orders()
-            shopify_balance = await get_balance()
+        description = f"{shopify}\n\n"
+        if shopify_desc:
+            description += f"{shopify_desc}{shopify_desc_closed}\n{shopify_balance}"
+        else:
+            quote = await random_quote()
+            description += f"{quote}\n\n{shopify_desc_closed}\n{shopify_balance}"
 
-            description = f"{shopify}\n\n"
-            if shopify_desc:
-                description += f"{shopify_desc}{shopify_desc_closed}\n{shopify_balance}"
-            else:
-                quote = await random_quote()
-                description += f"{quote}\n\n{shopify_desc_closed}\n{shopify_balance}"
+        orders_embed = discord.Embed(
+            description=description,
+            colour=discord.Colour.blurple()
+        )
+        await ctx.author.send(embed=orders_embed)
 
-            orders = discord.Embed(
-                description=description,
+@bot.command(name='order')
+async def order(ctx, uuid: str):
+    if is_us(ctx.author.id):
+        order_dict = await sapi.get_order(uuid)
+        shopify_message = ""
+        if isinstance(order_dict, dict):
+            for key in order_dict:
+                products = "".join([f"{product[0]} - **Quantity** {product[1]}\n" for product in order_dict[key]['products']])
+                shopify_message += (f"**{key}**\n"
+                                    f"**Name: **{order_dict[key]['name']}\n"
+                                    f"**Email: **{order_dict[key]['email']}\n"
+                                    f"**Price: **€{order_dict[key]['price']}\n"
+                                    f"**Country: **{order_dict[key]['country']}\n\n"
+                                    f"**Products:**\n{products}")
+            order_embed = discord.Embed(
+                description=shopify_message,
                 colour=discord.Colour.blurple()
             )
-            await message.author.send(embed=orders)
+        else:
+            order_embed = discord.Embed(
+                description=str(order_dict),
+                colour=discord.Colour.blurple()
+            )
+        await ctx.author.send(embed=order_embed)
 
-    if message.content.startswith('!order') and message.content != '!orders':
-        uuid = message.content.replace("!order ", "")
-        if is_us(message.author.id):
-            order_dict = await sapi.get_order(uuid)
-            shopify_message = ""
-            if isinstance(order_dict, dict):
-                for key in order_dict:
-                    products = "".join([f"{product[0]} - **Quantity** {product[1]}\n" for product in order_dict[key]['products']])
-                    shopify_message += (f"**{key}**\n"
-                                        f"**Name: **{order_dict[key]['name']}\n"
-                                        f"**Email: **{order_dict[key]['email']}\n"
-                                        f"**Price: **€{order_dict[key]['price']}\n"
-                                        f"**Country: **{order_dict[key]['country']}\n\n"
-                                        f"**Products:**\n{products}")
-                order = discord.Embed(
-                    description=shopify_message,
-                    colour=discord.Colour.blurple()
-                )
-            else:
-                order = discord.Embed(
-                    description=str(order_dict),
-                    colour=discord.Colour.blurple()
-                )
-            await message.author.send(embed=order)
-
-client.run(settings.DISCORD_WEBHOOK)
+bot.run(settings.DISCORD_WEBHOOK)
